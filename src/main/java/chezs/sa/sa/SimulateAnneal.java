@@ -6,14 +6,21 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Random;
 import java.util.Set;
 
+import org.projectfloodlight.openflow.protocol.OFFlowStatsEntry;
+import org.projectfloodlight.openflow.protocol.OFFlowStatsReply;
+import org.projectfloodlight.openflow.protocol.OFMatchV3;
 import org.projectfloodlight.openflow.protocol.OFMessage;
+import org.projectfloodlight.openflow.protocol.OFStatsReply;
 import org.projectfloodlight.openflow.protocol.OFType;
+import org.projectfloodlight.openflow.protocol.match.MatchField;
 import org.projectfloodlight.openflow.types.DatapathId;
+import org.projectfloodlight.openflow.types.MacAddress;
 import org.projectfloodlight.openflow.types.OFPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,66 +37,69 @@ import net.floodlightcontroller.packet.Ethernet;
 import net.floodlightcontroller.routing.Link;
 import net.floodlightcontroller.topology.ITopologyService;
 
-public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
+public class SimulateAnneal implements IOFMessageListener, IFloodlightModule,
+		ISimulateAnnealService {
 	protected ITopologyService topologyService;
 	protected IFloodlightProviderService floodlightProvider;
 	protected static Logger logger;
-	
-	protected int k;				// k-fat tree topology 
-	protected int N;				// iteration number in every temperature
-	protected int T;				// cooling number
-	protected double coolingRate;	// cooling param
-	protected double t0;			// start temperature
-	
+
+	protected int k; // k-fat tree topology
+	protected int N; // iteration number in every temperature
+	protected int T; // cooling number
+	protected double coolingRate; // cooling param
+	protected double t0; // start temperature
+
 	protected int coreSwitchNum;
-	
+
 	protected int bestT;
-	
+
 	/*
-	 * each flow: [inH, inE, inA, core, outA, outE, outH]
-	 * energy: overflowing bandwidth in all flows
-	 * neighbors: random choose 2 flows and then switch their "c"
+	 * each flow: [inH, inE, inA, core, outA, outE, outH] energy: overflowing
+	 * bandwidth in all flows neighbors: random choose 2 flows and then switch
+	 * their "c"
 	 */
 	protected Flow[] currFlows;
 	protected Flow[] bestFlows;
 	protected double bestEvaluation;
-	
+
 	protected int iterator;
-	
-//	protected int[][] Ghh;
-//	protected int GhhEvaluation;
-//	protected int[] bestGh;
-//	protected int[][] tempGhh;
-//	protected int tempEvaluation;
-	
+
+	// protected int[][] Ghh;
+	// protected int GhhEvaluation;
+	// protected int[] bestGh;
+	// protected int[][] tempGhh;
+	// protected int tempEvaluation;
+
 	protected Random random;
-	
-	
+
 	private class SrcDst {
 		public DatapathId src;
 		public DatapathId dst;
+
 		public SrcDst(DatapathId src, DatapathId dst) {
 			this.src = src;
 			this.dst = dst;
 		}
 	}
-	protected Set<SrcDst> todoFlowSet;		// flow cache
-	
+
+	protected Set<SrcDst> todoFlowSet; // flow cache
+
 	public void sa() {
 		initSa();
-		
+
 		double currEvaluation = evaluate(currFlows);
-		
+
 		Flow[] neighbor;
 		double currTemperature = t0;
-		
+
 		for (; T > 0; T--) {
 			neighbor = generateNeighbor();
 			double neighborEvaluation = evaluate(neighbor);
-			
+
 			double delta = neighborEvaluation - currEvaluation;
-			
-			boolean isAccept = Math.exp(-delta / currTemperature) > random.nextDouble();
+
+			boolean isAccept = Math.exp(-delta / currTemperature) > random
+					.nextDouble();
 			if (delta < 0 || isAccept) {
 				currFlows = copyState(neighbor);
 				currEvaluation = neighborEvaluation;
@@ -102,7 +112,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 			currTemperature *= coolingRate;
 		}
 	}
-	
+
 	private void initSa() {
 		t0 = 250;
 		coolingRate = 0.98;
@@ -110,11 +120,11 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 		bestEvaluation = Double.MAX_VALUE;
 		bestT = -1;
 		random = new Random(new Date().getTime());
-		
+
 		k = 4;
-		
+
 		currFlows = new Flow[todoFlowSet.size()];
-		
+
 		// random generate currFlows
 		Map<DatapathId, Set<Link>> linkMap = topologyService.getAllLinks();
 		int count = 0;
@@ -128,7 +138,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 			Link dstLink = (Link) dstLinkSet.toArray()[0];
 			DatapathId outEdge = dstLink.getDst();
 			// random get aggregation port => get inAggregation & outAggregation
-			int aggregationPort = random.nextInt(k/2) + 1;
+			int aggregationPort = random.nextInt(k / 2) + 1;
 			DatapathId inAggregation = null;
 			for (Link l : linkMap.get(inEdge)) {
 				if (l.getSrcPort().equals(OFPort.of(aggregationPort))) {
@@ -145,7 +155,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 				}
 			}
 			// random get core port => get core
-			int corePort = random.nextInt(k/2) + 1;
+			int corePort = random.nextInt(k / 2) + 1;
 			DatapathId core = null;
 			for (Link l : linkMap.get(inAggregation)) {
 				if (l.getSrcPort().equals(OFPort.of(corePort))) {
@@ -154,28 +164,29 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 				}
 			}
 			// generate new Flow
-			currFlows[count] = new Flow(sd.src, inEdge, inAggregation, core, outAggregation, outEdge, sd.dst, 900);
+			currFlows[count] = new Flow(sd.src, inEdge, inAggregation, core,
+					outAggregation, outEdge, sd.dst, 900);
 		}
 	}
-	
+
 	private double evaluate(Flow[] state) {
 		Map<DatapathId, Set<Link>> linkMap = topologyService.getAllLinks();
 		Map<Link, Double> costMap = new HashMap<Link, Double>();
-		
+
 		DatapathId[] dpidArray;
-		
+
 		for (Flow flow : state) {
 			dpidArray = flow.getDpidArray();
 			for (int i = 0; i < dpidArray.length - 1; i++) {
 				DatapathId srcDpid = dpidArray[i];
 				DatapathId dstDpid = dpidArray[i + 1];
-				
+
 				Set<Link> linkSet = linkMap.get(srcDpid);
 				Iterator<Link> iter = linkSet.iterator();
-				
+
 				while (iter.hasNext()) {
 					Link link = iter.next();
-					
+
 					if (link.getDst().equals(dstDpid)) {
 						Double cost;
 						if (costMap.containsKey(link)) {
@@ -189,7 +200,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 				}
 			}
 		}
-		
+
 		double res = 0;
 		for (Entry<Link, Double> entry : costMap.entrySet()) {
 			Double value = entry.getValue();
@@ -200,7 +211,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 		}
 		return res;
 	}
-	
+
 	private Flow[] generateNeighbor() {
 		Flow[] neighbor = copyState(currFlows);
 		int flowNum = neighbor.length;
@@ -209,11 +220,11 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 		if (flow1 < flow0) {
 			flow1++;
 		}
-		
+
 		DatapathId c0 = neighbor[flow0].core;
 		DatapathId c1 = neighbor[flow1].core;
 		Map<DatapathId, Set<Link>> linkMap = topologyService.getAllLinks();
-		
+
 		// get a0 port
 		DatapathId inA0 = currFlows[flow0].inAggregation;
 		DatapathId inE0 = currFlows[flow0].inEdge;
@@ -224,7 +235,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 				break;
 			}
 		}
-		
+
 		// get a1 port
 		DatapathId inA1 = currFlows[flow1].inAggregation;
 		DatapathId inE1 = currFlows[flow1].inEdge;
@@ -235,7 +246,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 				break;
 			}
 		}
-		
+
 		// get new input aggregation 0 & output aggregation 0
 		DatapathId inANew0 = null;
 		for (Link l : linkMap.get(inE0)) {
@@ -252,7 +263,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 				break;
 			}
 		}
-		
+
 		// get new input aggregation 1 & output aggregation 1
 		DatapathId inANew1 = null;
 		for (Link l : linkMap.get(inE1)) {
@@ -268,7 +279,7 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 				outANew1 = l.getDst();
 			}
 		}
-		
+
 		// switch 2 flows
 		neighbor[flow0].core = c1;
 		neighbor[flow0].inAggregation = inANew0;
@@ -276,10 +287,10 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 		neighbor[flow1].core = c0;
 		neighbor[flow1].inAggregation = inANew1;
 		neighbor[flow1].outAggregation = outANew1;
-		
+
 		return neighbor;
 	}
-	
+
 	private Flow[] copyState(Flow[] state) {
 		Flow[] res = new Flow[state.length];
 		for (int i = 0; i < state.length; i++) {
@@ -287,22 +298,26 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 		}
 		return res;
 	}
-	
+
+	/**
+	 * IFloodlightModule Implement
+	 */
 	@Override
 	public Collection<Class<? extends IFloodlightService>> getModuleServices() {
-		// TODO Auto-generated method stub
-		return null;
+		Collection<Class<? extends IFloodlightService>> l = new ArrayList<Class<? extends IFloodlightService>>();
+		l.add(ISimulateAnnealService.class);
+		return l;
 	}
 
 	@Override
 	public Map<Class<? extends IFloodlightService>, IFloodlightService> getServiceImpls() {
-		// TODO Auto-generated method stub
-		return null;
+		Map<Class<? extends IFloodlightService>, IFloodlightService> m = new HashMap<Class<? extends IFloodlightService>, IFloodlightService>();
+		m.put(ISimulateAnnealService.class, this);
+		return m;
 	}
 
 	@Override
 	public Collection<Class<? extends IFloodlightService>> getModuleDependencies() {
-		// TODO Auto-generated method stub
 		Collection<Class<? extends IFloodlightService>> l = new ArrayList<Class<? extends IFloodlightService>>();
 		l.add(IFloodlightProviderService.class);
 		l.add(ITopologyService.class);
@@ -312,19 +327,22 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 	@Override
 	public void init(FloodlightModuleContext context)
 			throws FloodlightModuleException {
-		this.floodlightProvider = context.getServiceImpl(IFloodlightProviderService.class);
+		this.floodlightProvider = context
+				.getServiceImpl(IFloodlightProviderService.class);
 		this.topologyService = context.getServiceImpl(ITopologyService.class);
-		this.todoFlowSet= new HashSet<SrcDst>();
+		this.todoFlowSet = new HashSet<SrcDst>();
 		logger = LoggerFactory.getLogger(SimulateAnneal.class);
 	}
 
 	@Override
 	public void startUp(FloodlightModuleContext context)
 			throws FloodlightModuleException {
-		// TODO Auto-generated method stub
 		floodlightProvider.addOFMessageListener(OFType.PACKET_IN, this);
 	}
 
+	/**
+	 * IOFMessageListener Implement
+	 */
 	@Override
 	public String getName() {
 		// TODO Auto-generated method stub
@@ -343,18 +361,38 @@ public class SimulateAnneal implements IOFMessageListener, IFloodlightModule {
 		return false;
 	}
 
-	/**
-	 * get flow by listen IOFMessage
-	 */
 	@Override
 	public net.floodlightcontroller.core.IListener.Command receive(IOFSwitch sw,
 			OFMessage msg, FloodlightContext cntx) {
 		// store flow to todoFlowSet
-		Ethernet eth = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
-		DatapathId srcDpid = DatapathId.of(eth.getSourceMACAddress());
-		DatapathId dstDpid = DatapathId.of(eth.getDestinationMACAddress());
-		todoFlowSet.add(new SrcDst(srcDpid, dstDpid));
+//		Ethernet eth = IFloodlightProviderService.bcStore.get(cntx,
+//				IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
+//		DatapathId srcDpid = DatapathId.of(eth.getSourceMACAddress());
+//		DatapathId dstDpid = DatapathId.of(eth.getDestinationMACAddress());
+//		todoFlowSet.add(new SrcDst(srcDpid, dstDpid));
 		return Command.CONTINUE;
+	}
+
+	/**
+	 * ISimulateAnnealService Implement
+	 */
+	@Override
+	public void receiveActiveFlow(Map<DatapathId, List<OFStatsReply>> model) {
+		todoFlowSet.clear();
+		for (Entry<DatapathId, List<OFStatsReply>> entry : model.entrySet()) {
+			for (OFStatsReply r : (List<OFStatsReply>) entry.getValue()) {
+				OFFlowStatsReply fsr = (OFFlowStatsReply) r;
+				for (OFFlowStatsEntry fse : fsr.getEntries()) {
+					OFMatchV3 match = (OFMatchV3) fse.getMatch();
+					MacAddress srcMac = match.get(MatchField.ETH_SRC);
+					MacAddress dstMac = match.get(MatchField.ETH_DST);
+					DatapathId srcDpid = DatapathId.of(srcMac);
+					DatapathId dstDpid = DatapathId.of(dstMac);
+					todoFlowSet.add(new SrcDst(srcDpid, dstDpid));
+				}
+			}
+		}
+		sa();
 	}
 
 }
